@@ -1,0 +1,15 @@
+{
+    "name" : "com.yuleo21.subasseteditor",
+    "displayName" : "Sub Asset Editor",
+    "version" : "1.0.0",
+    "author": {
+      "name": "yuleo21"
+    },
+    "unity" : "2022.3",
+    "description" : "Embed or extract sub-assets from any asset.",
+    "vpmDependencies" : {
+    },
+    "legacyFolders" : {
+      "": ""
+    }
+}
