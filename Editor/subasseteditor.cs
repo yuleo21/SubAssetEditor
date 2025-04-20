@@ -4,7 +4,7 @@ using UnityEditor.Animations;
 using System.Collections.Generic;
 using System.IO;
 
-public class SubAssetEmbedderWindow : EditorWindow
+public class SubAssetEditorWindow : EditorWindow
 {
     private Object targetAsset;
     private List<Object> assetsToEmbed = new List<Object>();
@@ -12,10 +12,10 @@ public class SubAssetEmbedderWindow : EditorWindow
     private Vector2 scrollPosition;
     private Dictionary<Object, bool> extractionSelections = new Dictionary<Object, bool>();
 
-    [MenuItem("21tools/Sub Asset Embedder")]
+    [MenuItem("21tools/Sub Asset Editor")]
     public static void ShowWindow()
     {
-        GetWindow<SubAssetEmbedderWindow>("Sub Asset Editor");
+        GetWindow<SubAssetEditorWindow>("Sub Asset Editor");
     }
 
     private void OnGUI()
