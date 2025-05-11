@@ -11,6 +11,10 @@ public class SubAssetEditorWindow : EditorWindow
     private List<Object> subAssets = new List<Object>();
     private Vector2 scrollPosition;
     private Dictionary<Object, bool> extractionSelections = new Dictionary<Object, bool>();
+    
+    private List<AnimatorController> referencedControllers = new List<AnimatorController>();
+    private bool showReferenceFixSection = false;
+    private Vector2 controllerScrollPosition;
 
     [MenuItem("21tools/Sub Asset Editor")]
     public static void ShowWindow()
@@ -36,6 +40,9 @@ public class SubAssetEditorWindow : EditorWindow
         GUILayout.Space(20);
         GUILayout.Label("Extracting Tool", EditorStyles.boldLabel);
         DrawExtractSection();
+        
+        GUILayout.Space(20);
+        DrawReferenceFixSection();
 
         EditorGUILayout.EndScrollView();
     }
@@ -118,10 +125,8 @@ public class SubAssetEditorWindow : EditorWindow
             foreach (var asset in subAssets)
             {
                 EditorGUILayout.BeginHorizontal();
-
                 extractionSelections[asset] = EditorGUILayout.ToggleLeft("", extractionSelections[asset], GUILayout.Width(20));
                 EditorGUILayout.ObjectField(asset, typeof(Object), false, GUILayout.ExpandWidth(true));
-
                 EditorGUILayout.EndHorizontal();
             }
         }
@@ -203,6 +208,8 @@ public class SubAssetEditorWindow : EditorWindow
 
         var mainAsset = AssetDatabase.LoadMainAssetAtPath(targetPath);
         bool madeChanges = false;
+        List<string> pathsToDelete = new List<string>();
+        Dictionary<Object, Object> originalToSubAssetMap = new Dictionary<Object, Object>();
 
         foreach (var obj in assetsToEmbed)
         {
@@ -220,6 +227,13 @@ public class SubAssetEditorWindow : EditorWindow
             {
                 copy.name = obj.name;
                 AssetDatabase.AddObjectToAsset(copy, mainAsset);
+                originalToSubAssetMap[obj] = copy;
+                
+                if (!string.IsNullOrEmpty(assetPath) && !pathsToDelete.Contains(assetPath))
+                {
+                    pathsToDelete.Add(assetPath);
+                }
+                
                 madeChanges = true;
             }
         }
@@ -227,10 +241,21 @@ public class SubAssetEditorWindow : EditorWindow
         if (madeChanges)
         {
             AssetDatabase.SaveAssets();
+            
+            if (referencedControllers.Count > 0)
+            {
+                UpdateAnimatorReferences(originalToSubAssetMap);
+            }
+            
+            foreach (var path in pathsToDelete)
+            {
+                AssetDatabase.DeleteAsset(path);
+            }
+            
             AssetDatabase.Refresh();
             Debug.Log("Sub-assets embedded successfully!");
-
-            // リスト更新処理を追加
+            
+            assetsToEmbed.Clear();
             UpdateSubAssetsList();
             Repaint();
         }
@@ -329,6 +354,319 @@ public class SubAssetEditorWindow : EditorWindow
         EditorUtility.CopySerialized(original, newMachine);
         return newMachine;
     }
+    
+    private void DrawReferenceFixSection()
+    {
+        showReferenceFixSection = EditorGUILayout.Foldout(showReferenceFixSection, "Reference Fixing Tool", true, EditorStyles.foldoutHeader);
+        
+        if (!showReferenceFixSection)
+            return;
+            
+        EditorGUILayout.HelpBox("Automatically updates references in the attached AnimatorControllers. Use this when embedding or extracting animations as sub-assets.", MessageType.Info);
+        
+        EditorGUILayout.BeginVertical("Box");
+        
+        float listHeight = referencedControllers.Count == 0 
+            ? 25
+            : Mathf.Min(120, (referencedControllers.Count + 1) * 20 + 5);
+        
+        controllerScrollPosition = EditorGUILayout.BeginScrollView(
+            controllerScrollPosition, 
+            GUILayout.Height(listHeight)
+        );
+        
+        for (int i = 0; i < referencedControllers.Count; i++)
+        {
+            EditorGUILayout.BeginHorizontal();
+            
+            referencedControllers[i] = (AnimatorController)EditorGUILayout.ObjectField(
+                $"Controller {i+1}", 
+                referencedControllers[i], 
+                typeof(AnimatorController), 
+                false
+            );
+            
+            if (GUILayout.Button("×", GUILayout.Width(20)))
+            {
+                referencedControllers.RemoveAt(i);
+                GUIUtility.ExitGUI();
+                return;
+            }
+            
+            EditorGUILayout.EndHorizontal();
+        }
+        
+        EditorGUILayout.BeginHorizontal();
+        
+        AnimatorController newController = (AnimatorController)EditorGUILayout.ObjectField(
+            "Add Controller", 
+            null, 
+            typeof(AnimatorController), 
+            false
+        );
+        
+        if (newController != null && !referencedControllers.Contains(newController))
+        {
+            referencedControllers.Add(newController);
+        }
+        
+        EditorGUILayout.EndHorizontal();
+        
+        EditorGUILayout.EndScrollView();
+        EditorGUILayout.EndVertical();
+        
+        EditorGUILayout.HelpBox("Warning: Finding all AnimatorControllers in a large project may cause performance issues and editor lag.", MessageType.Warning);
+        
+        if (GUILayout.Button("Find All AnimatorControllers in Project"))
+        {
+            FindAllAnimatorControllers();
+        }
+    }
+    
+    private void FindAllAnimatorControllers()
+    {
+        string[] guids = AssetDatabase.FindAssets("t:AnimatorController");
+        referencedControllers.Clear();
+        
+        foreach (string guid in guids)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+            if (controller != null)
+            {
+                referencedControllers.Add(controller);
+            }
+        }
+        
+        Debug.Log($"Found {referencedControllers.Count} animator controllers in project");
+    }
+    
+    private void UpdateAnimatorReferences(Dictionary<Object, Object> assetMapping)
+    {
+        if (assetMapping == null || assetMapping.Count == 0 || referencedControllers.Count == 0)
+            return;
+        
+        Debug.Log($"Updating references with {assetMapping.Count} mapped assets");
+        int updateCount = 0;
+        
+        List<AnimatorController> controllersToProcess = new List<AnimatorController>(referencedControllers);
+        
+        foreach (AnimatorController controller in controllersToProcess)
+        {
+            if (controller == null)
+                continue;
+            
+            Debug.Log($"Processing controller: {controller.name}");
+            bool controllerModified = false;
+            
+            SerializedObject serializedController = new SerializedObject(controller);
+            serializedController.Update();
+            
+            foreach (AnimatorControllerLayer layer in controller.layers)
+            {
+                if (layer.stateMachine == null)
+                    continue;
+                
+                bool layerModified = UpdateStateMachineReferences(layer.stateMachine, assetMapping);
+                if (layerModified)
+                {
+                    controllerModified = true;
+                    Debug.Log($"Updated references in layer: {layer.name}");
+                }
+            }
+            
+            if (controllerModified)
+            {
+                serializedController.ApplyModifiedProperties();
+                EditorUtility.SetDirty(controller);
+                updateCount++;
+            }
+        }
+        
+        if (updateCount > 0)
+        {
+            Debug.Log($"Successfully updated references in {updateCount} animator controllers");
+            AssetDatabase.SaveAssets();
+        }
+        else
+        {
+            Debug.Log("No controller references needed updating");
+        }
+    }
+    
+    private bool UpdateStateMachineReferences(AnimatorStateMachine stateMachine, Dictionary<Object, Object> assetMapping)
+    {
+        if (stateMachine == null)
+            return false;
+            
+        bool wasModified = false;
+        
+        SerializedObject serializedStateMachine = new SerializedObject(stateMachine);
+        serializedStateMachine.Update();
+        
+        foreach (ChildAnimatorState childState in stateMachine.states)
+        {
+            AnimatorState state = childState.state;
+            
+            if (state == null)
+                continue;
+                
+            if (state.motion != null)
+            {
+                foreach (var mapping in assetMapping)
+                {
+                    if (state.motion == mapping.Key || 
+                        (state.motion != null && mapping.Key != null && 
+                         state.motion.GetInstanceID() == mapping.Key.GetInstanceID()))
+                    {
+                        Debug.Log($"Updating motion reference in state: {state.name}");
+                        SerializedObject serializedState = new SerializedObject(state);
+                        serializedState.Update();
+                        
+                        state.motion = mapping.Value as Motion;
+                        
+                        serializedState.ApplyModifiedProperties();
+                        EditorUtility.SetDirty(state);
+                        wasModified = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        foreach (ChildAnimatorState childState in stateMachine.states)
+        {
+            AnimatorState state = childState.state;
+            
+            if (state == null || !(state.motion is BlendTree))
+                continue;
+                
+            if (UpdateBlendTreeReferences(state.motion as BlendTree, assetMapping))
+            {
+                EditorUtility.SetDirty(state);
+                wasModified = true;
+            }
+        }
+        
+        foreach (ChildAnimatorStateMachine childStateMachine in stateMachine.stateMachines)
+        {
+            if (childStateMachine.stateMachine == null)
+                continue;
+                
+            if (UpdateStateMachineReferences(childStateMachine.stateMachine, assetMapping))
+            {
+                wasModified = true;
+            }
+        }
+        
+        foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
+        {
+            if (transition != null && transition.destinationState != null && 
+                transition.destinationState.motion != null)
+            {
+                foreach (var mapping in assetMapping)
+                {
+                    if (transition.destinationState.motion == mapping.Key ||
+                        (transition.destinationState.motion != null && mapping.Key != null &&
+                         transition.destinationState.motion.GetInstanceID() == mapping.Key.GetInstanceID()))
+                    {
+                        Debug.Log($"Updating transition destination state motion reference");
+                        SerializedObject serializedTransition = new SerializedObject(transition);
+                        serializedTransition.Update();
+                        
+                        transition.destinationState.motion = mapping.Value as Motion;
+                        
+                        serializedTransition.ApplyModifiedProperties();
+                        EditorUtility.SetDirty(transition);
+                        wasModified = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (wasModified)
+        {
+            serializedStateMachine.ApplyModifiedProperties();
+            EditorUtility.SetDirty(stateMachine);
+        }
+        
+        return wasModified;
+    }
+    
+    private bool UpdateBlendTreeReferences(BlendTree blendTree, Dictionary<Object, Object> assetMapping)
+    {
+        if (blendTree == null)
+            return false;
+            
+        bool wasModified = false;
+        
+        SerializedObject serializedBlendTree = new SerializedObject(blendTree);
+        serializedBlendTree.Update();
+        
+        List<ChildMotion> updatedChildren = new List<ChildMotion>();
+        
+        for (int i = 0; i < blendTree.children.Length; i++)
+        {
+            ChildMotion childMotion = blendTree.children[i];
+            ChildMotion updatedMotion = new ChildMotion
+            {
+                motion = childMotion.motion,
+                threshold = childMotion.threshold,
+                position = childMotion.position,
+                timeScale = childMotion.timeScale,
+                cycleOffset = childMotion.cycleOffset,
+                directBlendParameter = childMotion.directBlendParameter,
+                mirror = childMotion.mirror
+            };
+            
+            if (childMotion.motion != null)
+            {
+                if (assetMapping.TryGetValue(childMotion.motion, out Object newMotion))
+                {
+                    Debug.Log($"Updating blend tree child motion: {childMotion.motion.name} -> {newMotion.name}");
+                    updatedMotion.motion = newMotion as Motion;
+                    wasModified = true;
+                }
+                else
+                {
+                    foreach (var mapping in assetMapping)
+                    {
+                        if (mapping.Key != null && childMotion.motion != null && 
+                            mapping.Key.GetInstanceID() == childMotion.motion.GetInstanceID())
+                        {
+                            Debug.Log($"Updating blend tree child motion by instance ID: {childMotion.motion.name} -> {mapping.Value.name}");
+                            updatedMotion.motion = mapping.Value as Motion;
+                            wasModified = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            updatedChildren.Add(updatedMotion);
+            
+            if (childMotion.motion is BlendTree childBlendTree)
+            {
+                if (UpdateBlendTreeReferences(childBlendTree, assetMapping))
+                {
+                    wasModified = true;
+                }
+            }
+        }
+        
+        if (wasModified)
+        {
+            blendTree.children = updatedChildren.ToArray();
+            
+            serializedBlendTree.ApplyModifiedProperties();
+            EditorUtility.SetDirty(blendTree);
+            
+            Debug.Log($"Updated references in blend tree: {blendTree.name}");
+        }
+        
+        return wasModified;
+    }
 
     private void ProcessExtraction()
     {
@@ -359,39 +697,60 @@ public class SubAssetEditorWindow : EditorWindow
 
         string directory = Path.GetDirectoryName(targetPath);
         int counter = 0;
-        bool needsRefresh = false;
-
-        var mainAsset = AssetDatabase.LoadMainAssetAtPath(targetPath);
+        
+        Dictionary<Object, Object> subAssetToExtractedMap = new Dictionary<Object, Object>();
 
         foreach (Object subAsset in selectedAssets)
         {
             if (subAsset == null) continue;
 
-            string newPath = Path.Combine(directory, $"{targetAsset.name}_{subAsset.name}.asset");
+            string newPath = Path.Combine(directory, $"{subAsset.name}.asset");
             newPath = AssetDatabase.GenerateUniqueAssetPath(newPath);
 
             Object clone = CreateAssetCopy(subAsset);
             if (clone != null)
             {
                 AssetDatabase.CreateAsset(clone, newPath);
-                counter++;
-
-                if (AssetDatabase.IsSubAsset(subAsset))
+                AssetDatabase.SaveAssets();
+                
+                Object createdAsset = AssetDatabase.LoadAssetAtPath(newPath, subAsset.GetType());
+                
+                if (createdAsset != null)
                 {
-                    AssetDatabase.RemoveObjectFromAsset(subAsset);
-                    UnityEngine.Object.DestroyImmediate(subAsset, true);
-                    needsRefresh = true;
+                    subAssetToExtractedMap[subAsset] = createdAsset;
+                    counter++;
+                    Debug.Log($"Created extracted asset: {newPath}");
                 }
+                else
+                {
+                    Debug.LogError($"Failed to load created asset at: {newPath}");
+                }
+            }
+        }
+        
+        AssetDatabase.SaveAssets();
+        AssetDatabase.Refresh();
+        
+        if (counter > 0 && referencedControllers.Count > 0)
+        {
+            Debug.Log($"Updating references in {referencedControllers.Count} controllers...");
+            UpdateAnimatorReferences(subAssetToExtractedMap);
+            
+            AssetDatabase.SaveAssets();
+        }
+        
+        foreach (Object subAsset in selectedAssets)
+        {
+            if (AssetDatabase.IsSubAsset(subAsset) && subAssetToExtractedMap.ContainsKey(subAsset))
+            {
+                AssetDatabase.RemoveObjectFromAsset(subAsset);
             }
         }
 
         if (counter > 0)
         {
-            if (needsRefresh)
-            {
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-            }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
             Debug.Log($"Successfully extracted {counter} sub-assets to {directory}");
             UpdateSubAssetsList();
             Repaint();
