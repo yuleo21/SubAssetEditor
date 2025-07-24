@@ -1,5 +1,5 @@
 {
-    "name": "com.yuleo21.subassetseditor.Editor",
+    "name": "net.yuleo21.subassetseditor.Editor",
     "rootNamespace": "",
     "references": [],
     "includePlatforms": [
